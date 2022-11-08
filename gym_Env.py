@@ -3,21 +3,23 @@ import numpy as np
 import networkx as nx
 from gym.spaces import Box, MultiBinary, Dict, MultiDiscrete
 from scratch import SocialGraph, Node, Message
+from matplotlib import pyplot as plt
 
 
 class MyEnv(gym.Env):
     def __init__(self, env_config):
-        self.n_nodes = 100
-        self.action_space = MultiDiscrete([self.n_nodes, self.n_nodes])
+        self.n_nodes = 200
+        self.action_space = MultiDiscrete([self.n_nodes+1, self.n_nodes+1])
             # Box(low=0, high=self.n_nodes-1, shape=(1,), dtype=int)
         self.observation_space = Dict({"connected_nodes": MultiBinary(self.n_nodes),
-                                       "original_messages": MultiBinary(self.n_nodes),
+                                       "accumulated original_messages": Box(low=0, high=np.inf, shape=(self.n_nodes,)),
                                        "original_sources": Box(low=0, high=np.inf, shape=(self.n_nodes,))})
         self.graph = SocialGraph()
 
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        self.seed(seed)
         self._initialize_graph(seed)
         for _ in range(300):
             self.graph = self.graph.step()
@@ -26,6 +28,7 @@ class MyEnv(gym.Env):
         SocialGraph.unique_message_count = 1
         self._connected_nodes = np.zeros(self.n_nodes)
         self._original_messages = np.zeros(self.n_nodes)
+        self._acc_original_messages = np.zeros(self.n_nodes)
         self._original_sources = np.zeros(self.n_nodes)
         self.messages = set()
         self.unique_messages = 0
@@ -35,19 +38,38 @@ class MyEnv(gym.Env):
 
     def step(self, action):
         self._original_messages = np.zeros(self.n_nodes)
+
         self._take_action(action)
         self.steps += 1
         reward = self._compute_reward()
         info = {}
-        done = (self.steps == 400)
-        print(f"step: {self.steps}, reward: {reward}, uniques: {self.unique_messages}, our ratio: {self.unique_messages / self.total_messages} "
-              f"connected: {sum(self._connected_nodes)}, total: {self.total_messages} avegare ratio: {self.graph.unique_message_count / self.graph.total_message_count}")
+        done = (self.steps == 15000)
+        if done:
+            plt.hist(self.originality, range=(0, 1))
+            # plt.show()
+            # plt.hist(self.follow_prob,)
+            # plt.show()
+            # plt.hist(self.unfollow_prob, bins=2)
+            # plt.show()
+
+            connected_nodes = np.argwhere(self._connected_nodes == 1).flatten()
+            final_orig = np.zeros(len(connected_nodes))
+            for i, n in enumerate(connected_nodes):
+                final_orig[i] = self.nodes[n].originality_prob
+            plt.hist(final_orig, range=(0, 1))
+            plt.show()
+        if self.total_messages:
+            print(f"step: {self.steps}, reward: {reward}, uniques: {self.unique_messages}, our ratio: {self.unique_messages / self.total_messages} "
+                  f"connected: {sum(self._connected_nodes)}, total: {self.total_messages} avegare ratio: {self.graph.unique_message_count / self.graph.total_message_count}")
         return self._get_obs(), reward, done, info
 
     def _compute_reward(self):
         if sum(self._connected_nodes) == 0:
             return -1
-        return (2*sum(self._original_messages) - sum(self._connected_nodes)) / self.graph.step_messages
+        return (2 * sum(self._original_messages) - sum(self._connected_nodes)) / self.graph.step_messages
+
+    def seed(self, seed=None):
+        np.random.seed(seed)
 
 
 
@@ -62,13 +84,16 @@ class MyEnv(gym.Env):
                         self.messages.add(message.signature)
                         self.unique_messages += 1
                         self._original_messages[i] = 1
+                        self._acc_original_messages[i] += 1
                         self._original_sources[message.origin.id] += 1
                     self.total_messages += 1
 
         add_id = action[0]
         remove_id = action[1]
-        self._connected_nodes[add_id] = 1
-        self._connected_nodes[remove_id] = 0
+        if add_id != self.n_nodes:
+            self._connected_nodes[add_id] = 1
+        if remove_id != self.n_nodes:
+            self._connected_nodes[remove_id] = 0
         self.graph = self.graph.step(dynamic=False)
         get_messages()
 
@@ -76,18 +101,18 @@ class MyEnv(gym.Env):
 
     def _get_obs(self):
         return {"connected_nodes": self._connected_nodes,
-                "original_messages": self._original_messages,
+                "accumulated original_messages": self._acc_original_messages,
                 "original_sources": self._original_sources}
 
 
     def _initialize_graph(self, seed):
         def create_nodes(n_nodes):
-            originality = get_probs(n_nodes, scale=10)
-            follow_prob = get_probs(n_nodes)
-            unfollow_prob = get_probs(n_nodes, scale=32)
-            nodes = [Node(id=id, originality_prob=originality[id],
-                          follow_prob=follow_prob[id],
-                          unfollow_prob=unfollow_prob[id]) for id in range(n_nodes)]
+            self.originality = get_probs(n_nodes, scale=12)
+            self.follow_prob = get_probs(n_nodes, scale=12)
+            self.unfollow_prob = get_probs(n_nodes, scale=32)
+            nodes = [Node(id=id, originality_prob=self.originality[id],
+                          follow_prob=self.follow_prob[id],
+                          unfollow_prob=self.unfollow_prob[id]) for id in range(n_nodes)]
             return nodes
 
         def get_probs(n: int, offset: float = 0.0, scale: float = 12.0, negative: bool = False):
